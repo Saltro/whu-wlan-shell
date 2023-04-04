@@ -2,6 +2,16 @@
 
 set -ue
 
+getMachine() {
+    case `uname -s` in
+        Darwin*) echo "mac";;
+        Linux*Microsoft*) echo "wsl";;
+        Linux*) echo "linux";;
+        CYGWIN* | MINGW* | MINGW32* | MSYS*) echo "win";;
+        *) echo "unknown";;
+    esac
+}
+
 logError() {
     echo -e $1
     exit 1
@@ -18,10 +28,20 @@ login() {
     response=`curl -m 5 -sL http://172.19.1.9:8080` \
         || logError " \
             Error: Can't reach certification website (172.19.1.9:8080). This could be that you are already logged in, or you are not yet connected to WHU-WLAN/WHU-STU/WHU-STU-5G"
-    queryString=`echo $response \
-        | sed "s/.*\?\([^\/']*\)'.*/\1/g" \
-        | sed "s/&/%26/g" \
-        | sed "s/=/%3D/g"`
+    if [ $machine == "mac" ]
+    then
+        echo "this is mac"
+        queryString=`echo $response \
+            | sed "s/.*\?\([^\/']*\)'.*/\1/g" \
+            | sed "s/&/%26/g" \
+            | sed "s/=/%3D/g"`
+    else
+        echo "this is not mac"
+        queryString=`echo $response \
+            | sed "s/.*?\([^\/']*\)'.*/\1/g" \
+            | sed "s/&/%26/g" \
+            | sed "s/=/%3D/g"`
+    fi
     asn1File=`mktemp pub.asn1.XXXXX`
     derFile=`mktemp pubkey.der.XXXXX`
     pemFile=`mktemp pubkey.pem.XXXXX`
@@ -45,11 +65,20 @@ e=INTEGER:0x$EXPONENT
 EOF
     openssl asn1parse -genconf $asn1File -out $derFile
     openssl rsa -in $derFile -inform der -pubin -out $pemFile
-    passwordByte=`echo "$rawPassword\c" | wc -c`
-    modulusLength=`echo "$MODULUS\c" | wc -c`
-    modulusByte=`expr $modulusLength \/ 2`
-    dd if=/dev/zero of=$passwordFile bs=1 count=`expr $modulusByte - $passwordByte`
-    echo "$rawPassword\c" | dd of=$passwordFile bs=1 seek=`expr $modulusByte - $passwordByte`
+    if [ $machine == "mac" ]
+    then
+        passwordByte=`echo "$rawPassword\c" | wc -c`
+        modulusLength=`echo "$MODULUS\c" | wc -c`
+        modulusByte=`expr $modulusLength \/ 2`
+        dd if=/dev/zero of=$passwordFile bs=1 count=`expr $modulusByte - $passwordByte`
+        echo "$rawPassword\c" | dd of=$passwordFile bs=1 seek=`expr $modulusByte - $passwordByte`
+    else
+        passwordByte=`echo -e "$rawPassword\c" | wc -c`
+        modulusLength=`echo -e "$MODULUS\c" | wc -c`
+        modulusByte=`expr $modulusLength \/ 2`
+        dd if=/dev/zero of=$passwordFile bs=1 count=`expr $modulusByte - $passwordByte`
+        echo -e "$rawPassword\c" | dd of=$passwordFile bs=1 seek=`expr $modulusByte - $passwordByte`
+    fi
     openssl rsautl -encrypt -raw -inkey $pemFile -pubin -in $passwordFile -out $secretFile
     encryptedPassword=`xxd -c 256 -p $secretFile`
     curl -m 5 "http://172.19.1.9:8080/eportal/InterFace.do?method=login" \
@@ -61,6 +90,8 @@ EOF
         -d "passwordEncrypt=true" \
         || logError "Error: Send login request to 172.19.1.9:8080 error"
 }
+
+machine=`getMachine`
 
 case $1 in
     "login" | "-i" | "i" | "in")
